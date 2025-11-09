@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import {
   Play,
@@ -16,7 +17,18 @@ import {
   LogOut
 } from "lucide-react";
 
-const API_BASE = "/api";
+const DEFAULT_API_BASE = (() => {
+  const raw = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
+  return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+})();
+
+const STORAGE_API_BASE_KEY = "cyber-start:dashboard:api-base";
+
+const normalizeApiBase = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+};
 
 type TrafficState = "ROJO" | "AMARILLO" | "VERDE" | "OFF";
 
@@ -43,6 +55,18 @@ export default function Dashboard() {
   const [currentTime, setCurrentTime] = useState("--");
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected">("disconnected");
   const lastErrorNotifiedRef = useRef(false);
+  const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
+  const [pendingApiBase, setPendingApiBase] = useState(DEFAULT_API_BASE);
+
+  const resolvedApiBase = useMemo(() => {
+    const normalized = normalizeApiBase(apiBase);
+    return normalized || DEFAULT_API_BASE;
+  }, [apiBase]);
+
+  const buildApiUrl = useCallback(
+    (path: string) => `${resolvedApiBase}${path.startsWith("/") ? path : `/${path}`}`,
+    [resolvedApiBase]
+  );
 
   // Redirigir si no hay usuario
   useEffect(() => {
@@ -51,15 +75,64 @@ export default function Dashboard() {
     }
   }, [user, loading, navigate]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(STORAGE_API_BASE_KEY);
+    if (stored) {
+      const normalized = normalizeApiBase(stored);
+      setApiBase(normalized || DEFAULT_API_BASE);
+      setPendingApiBase(normalized || DEFAULT_API_BASE);
+    }
+  }, []);
+
+  const handlePersistApiBase = useCallback(
+    (value: string) => {
+      const normalized = normalizeApiBase(value);
+      const finalValue = normalized || DEFAULT_API_BASE;
+      setApiBase(finalValue);
+      setPendingApiBase(finalValue);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(STORAGE_API_BASE_KEY, finalValue);
+      }
+      toast({
+        title: "API actualizada",
+        description: `Usando ${finalValue} para las peticiones`,
+      });
+    },
+    [buildApiUrl, toast]
+  );
+
+  const handleResetApiBase = useCallback(() => {
+    setApiBase(DEFAULT_API_BASE);
+    setPendingApiBase(DEFAULT_API_BASE);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(STORAGE_API_BASE_KEY);
+    }
+    toast({
+      title: "API restablecida",
+      description: "Se utiliza el proxy local (/api)",
+    });
+  }, [toast]);
+
   const fetchState = useCallback(
     async ({ signal }: { signal?: AbortSignal } = {}) => {
       try {
-        const response = await fetch(`${API_BASE}/state`, {
+        const response = await fetch(buildApiUrl("/state"), {
           cache: "no-store",
           signal,
         });
         if (!response.ok) {
-          throw new Error(`Estado HTTP ${response.status}`);
+          const bodyText = await response.text();
+          let detail = bodyText;
+          try {
+            const parsed = JSON.parse(bodyText);
+            if (parsed?.detail) {
+              detail = parsed.detail;
+            }
+          } catch {
+            /* noop */
+          }
+          throw new Error(`Estado HTTP ${response.status}${detail ? ` – ${detail}` : ""}`);
         }
 
         const data: {
@@ -96,7 +169,7 @@ export default function Dashboard() {
         }
       }
     },
-    [toast]
+    [buildApiUrl, toast]
   );
 
   useEffect(() => {
@@ -115,7 +188,7 @@ export default function Dashboard() {
 
   const handleStart = async () => {
     try {
-      const response = await fetch(`${API_BASE}/start`, { method: "GET" });
+      const response = await fetch(buildApiUrl("/start"), { method: "GET" });
       if (!response.ok) {
         throw new Error(`Estado HTTP ${response.status}`);
       }
@@ -141,7 +214,7 @@ export default function Dashboard() {
 
   const handleStop = async () => {
     try {
-      const response = await fetch(`${API_BASE}/stop`, { method: "GET" });
+      const response = await fetch(buildApiUrl("/stop"), { method: "GET" });
       if (!response.ok) {
         throw new Error(`Estado HTTP ${response.status}`);
       }
@@ -308,6 +381,32 @@ export default function Dashboard() {
           </Card>
 
           <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Wifi className="h-5 w-5 text-primary" />
+                  Configurar API
+                </CardTitle>
+                <CardDescription>
+                  Define la URL base usada para comunicar con el ESP32.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Input
+                  value={pendingApiBase}
+                  onChange={(event) => setPendingApiBase(event.target.value)}
+                  placeholder="http://<IP>:<puerto>/api"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => handlePersistApiBase(pendingApiBase)}>Guardar</Button>
+                  <Button variant="outline" onClick={handleResetApiBase}>Usar proxy local</Button>
+                </div>
+                <p className="text-xs text-muted-foreground break-all">
+                  Actual: {resolvedApiBase}
+                </p>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">

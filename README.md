@@ -51,6 +51,8 @@ python servidor_final.py
 
 El banner inicial mostrará todas las URL disponibles (localhost y las IP de la red). Si necesitas indicar manualmente dónde está la carpeta `dist`, añade `--web-dir "Ruta\al\dist"`.
 
+> 💡 El proxy mantiene `/api/*` apuntando al ESP32. Si cambias el puerto con `--port` o `SERVIDOR_PUERTO`, actualiza también cualquier variable de entorno que use la interfaz (por ejemplo `VITE_PROXY_TARGET`).
+
 ---
 
 ## 4. Cargar el firmware en el ESP32
@@ -65,7 +67,8 @@ El banner inicial mostrará todas las URL disponibles (localhost y las IP de la 
 1. Asegúrate de que el ESP32 y tu PC estén en la misma red.
 2. Arranca `servidor_final.py` con la IP real del ESP32.
 3. Abre `http://localhost:8080` (o la IP que muestre el banner) en el navegador.
-4. Desde la página puedes iniciar/detener el ciclo del semáforo y ver el estado actual.
+4. Desde la página puedes iniciar/detener el ciclo del semáforo y ver el estado actual. La tarjeta **Configurar API** del panel
+   permite indicar otra URL base si sirves la interfaz desde un origen diferente al proxy.
 
 Si recibes un error 502, revisa la conexión del ESP32 y que el puerto 80 esté accesible desde tu PC.
 
@@ -77,7 +80,19 @@ Para realizar cambios rápidos en el front-end puedes usar el servidor de desarr
 cd PaginaSemaforos/PaginaSemaforos
 npm run dev
 ```
-Ten en cuenta que el proxy Python también usa el puerto 8080 por defecto; detén el servidor de Vite antes de iniciar el proxy o utiliza `--port` para cambiar el puerto público del proxy.
+El servidor de desarrollo ahora escucha en `http://localhost:5173` y reenvía automáticamente las rutas `/api/*` hacia `http://127.0.0.1:8080` (el proxy Python). Mantén `servidor_final.py` en ejecución o ajusta el destino con:
+
+```powershell
+$env:VITE_PROXY_TARGET = "http://192.168.1.120:80"
+npm run dev
+```
+
+Si despliegas la web sin el proxy, define `VITE_API_BASE_URL` para apuntar directamente al ESP32:
+
+```powershell
+$env:VITE_API_BASE_URL = "http://192.168.1.120/api"
+npm run build
+```
 
 ---
 
@@ -85,5 +100,6 @@ Ten en cuenta que el proxy Python también usa el puerto 8080 por defecto; deté
 - **`python3` no es reconocido**: En Windows usa `python` o `py`.
 - **Timeout al abrir la página**: verifica el firewall de Windows o utiliza `--bind 0.0.0.0` para escuchar en todas las interfaces.
 - **`npm` no está instalado**: instala Node.js (versión 18 o superior recomendada).
+- **Errores 502 en la web**: revisa que `servidor_final.py` esté apuntando a la IP correcta del ESP32 y que `VITE_PROXY_TARGET`/`VITE_API_BASE_URL` usen ese mismo destino cuando trabajes en desarrollo o despliegues personalizados.
 
 Con estos pasos deberías poder levantar toda la solución y controlar el semáforo físico desde la web.

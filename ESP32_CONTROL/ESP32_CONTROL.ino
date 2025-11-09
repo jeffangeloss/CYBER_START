@@ -22,6 +22,14 @@ bool lcd_on = true;
 // ===== Servos =====
 Servo s1, s2; const int SERVO1=25, SERVO2=26; const int A_OPEN=45, A_CLOSE=0; bool opened=false;
 int servo1Angle=A_CLOSE, servo2Angle=A_CLOSE; bool servosAttached=false;
+
+void idleServoPins(){
+  digitalWrite(SERVO1, LOW);
+  digitalWrite(SERVO2, LOW);
+  pinMode(SERVO1, OUTPUT);
+  pinMode(SERVO2, OUTPUT);
+}
+
 void attachServos(){
   if(!servosAttached){
     s1.attach(SERVO1, 500, 2400);
@@ -37,6 +45,7 @@ void detachServos(){
     s1.detach();
     s2.detach();
     servosAttached=false;
+    idleServoPins();
   }
 }
 void smoothTo(Servo &s,int &current,int toA){
@@ -145,6 +154,7 @@ void api_lcd_cursor(){
 void setup(){
   Serial.begin(115200);
   pinMode(LED_ROJO,OUTPUT); pinMode(LED_AMARILLO,OUTPUT); pinMode(LED_VERDE,OUTPUT);
+  idleServoPins();
 
   Wire.begin(21,22);
   lcd.init(); lcd.backlight(); lcd.clear();
@@ -156,10 +166,7 @@ void setup(){
 
   s1.setPeriodHertz(50); s2.setPeriodHertz(50);
   servo1Angle = A_CLOSE; servo2Angle = A_CLOSE; opened=false;
-  attachServos();
-  smoothTo(s1, servo1Angle, A_CLOSE);
-  smoothTo(s2, servo2Angle, A_CLOSE);
-  detachServos();
+  servosAttached=false;
 
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("WiFi"); for(int i=0;i<60 && WiFi.status()!=WL_CONNECTED;i++){ delay(500); Serial.print("."); }
