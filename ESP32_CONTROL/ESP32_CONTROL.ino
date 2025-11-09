@@ -6,8 +6,8 @@
 #include <ESP32Servo.h>
 
 // ===== WiFi =====
-const char* WIFI_SSID = "jefferson";
-const char* WIFI_PASS = "gabyjeff1617!!!";
+const char* WIFI_SSID = "ANGELO";
+const char* WIFI_PASS = "omcvlacp17j";
 
 // ===== GPIOs Semáforo =====
 const int LED_ROJO=16, LED_AMARILLO=17, LED_VERDE=18;
@@ -21,10 +21,48 @@ bool lcd_on = true;
 
 // ===== Servos =====
 Servo s1, s2; const int SERVO1=25, SERVO2=26; const int A_OPEN=45, A_CLOSE=0; bool opened=false;
-void smoothTo(Servo &s,int fromA,int toA){ int step=(toA>=fromA)?1:-1; for(int a=fromA;a!=toA;a+=step){ s.write(a); delay(6);} s.write(toA); }
+int servo1Angle=A_CLOSE, servo2Angle=A_CLOSE; bool servosAttached=false;
+void attachServos(){
+  if(!servosAttached){
+    s1.attach(SERVO1, 500, 2400);
+    s2.attach(SERVO2, 500, 2400);
+    s1.write(servo1Angle);
+    s2.write(servo2Angle);
+    servosAttached=true;
+    delay(150);
+  }
+}
+void detachServos(){
+  if(servosAttached && !opened){
+    s1.detach();
+    s2.detach();
+    servosAttached=false;
+  }
+}
+void smoothTo(Servo &s,int &current,int toA){
+  int fromA=current;
+  if(fromA==toA){ s.write(toA); return; }
+  int step=(toA>=fromA)?1:-1;
+  for(int a=fromA;a!=toA;a+=step){ s.write(a); delay(6);} s.write(toA);
+  current=toA;
+}
 void setOpen(bool on){
-  if(on && !opened){ smoothTo(s1,A_CLOSE,A_OPEN); smoothTo(s2,A_CLOSE,A_OPEN); opened=true; }
-  else if(!on && opened){ smoothTo(s1,A_OPEN,A_CLOSE); smoothTo(s2,A_OPEN,A_CLOSE); opened=false; }
+  if(on && !opened){
+    attachServos();
+    smoothTo(s1,servo1Angle,A_OPEN);
+    smoothTo(s2,servo2Angle,A_OPEN);
+    opened=true;
+  }
+  else if(!on && opened){
+    attachServos();
+    smoothTo(s1,servo1Angle,A_CLOSE);
+    smoothTo(s2,servo2Angle,A_CLOSE);
+    opened=false;
+    detachServos();
+  }
+  else if(!on){
+    detachServos();
+  }
 }
 
 // ===== Helpers =====
@@ -117,8 +155,11 @@ void setup(){
   if(rtc_ok && rtc.lostPower()){ rtc.adjust(DateTime(F(__DATE__),F(__TIME__))); }
 
   s1.setPeriodHertz(50); s2.setPeriodHertz(50);
-  s1.attach(SERVO1, 500, 2400); s2.attach(SERVO2, 500, 2400);
-  s1.write(A_CLOSE); s2.write(A_CLOSE); opened=false;
+  servo1Angle = A_CLOSE; servo2Angle = A_CLOSE; opened=false;
+  attachServos();
+  smoothTo(s1, servo1Angle, A_CLOSE);
+  smoothTo(s2, servo2Angle, A_CLOSE);
+  detachServos();
 
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("WiFi"); for(int i=0;i<60 && WiFi.status()!=WL_CONNECTED;i++){ delay(500); Serial.print("."); }
