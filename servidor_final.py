@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import http.server, socketserver, socket, threading, os, zipfile, signal, http.client, json
+import http.server, socketserver, socket, os, zipfile, signal, http.client, json
+import argparse
+from textwrap import dedent
+from typing import Optional
 from pathlib import Path
 
 # ========= CONFIG =========
-ESP32_HOST  = "10.224.113.103"   # <-- PON AQUÍ la IP REAL del ESP32 (monitor serie)
-ESP32_PORT  = 80
-PUERTO_BASE = 8080               # <-- Tu servidor local (Windows / VM)
+# Valores por defecto (pueden sobreescribirse por CLI o variables de entorno)
+ESP32_HOST  = os.environ.get("ESP32_HOST", "10.224.113.103")   # <-- PON AQUÍ la IP REAL del ESP32 (monitor serie)
+ESP32_PORT  = int(os.environ.get("ESP32_PORT", "80"))
+PUERTO_BASE = int(os.environ.get("SERVIDOR_PUERTO", "8080"))  # <-- Tu servidor local (Windows / VM)
+SERVIDOR_BIND = os.environ.get("SERVIDOR_BIND", "0.0.0.0")    # Escuchar en todas las interfaces por defecto
 # ==========================
 
 BASE_DIR = Path(__file__).parent.resolve()
@@ -49,7 +54,29 @@ def auto_web_dir() -> Path:
     # Último recurso: servir BASE_DIR (mostrará listing si no hay index)
     return BASE_DIR
 
-WEB_DIR = auto_web_dir()
+def resolve_web_dir(arg_dir: Optional[str]) -> Path:
+    if arg_dir:
+        manual = Path(arg_dir).expanduser().resolve()
+        if manual.is_dir():
+            return manual
+        raise SystemExit(f"[ERROR] La ruta indicada en --web-dir no existe: {manual}")
+    return auto_web_dir()
+
+def print_help_banner(listen_host: str, listen_port: int, esp32_host: str, esp32_port: int, web_dir: Path):
+    primary_host = "localhost" if listen_host in {"0.0.0.0", "127.0.0.1"} else listen_host
+    ip_visibles = sorted({listen_host, IP_SERVIDOR, "127.0.0.1", primary_host})
+    print("=" * 72)
+    print(" Proxy local listo ")
+    print("=" * 72)
+    print(f"- Sitio web:   http://{primary_host}:{listen_port}")
+    for ip in ip_visibles:
+        if ip in ("0.0.0.0", "127.0.0.1"):
+            continue
+        print(f"               http://{ip}:{listen_port}")
+    print(f"- Archivos:    {web_dir}")
+    print(f"- API bridge:  http://{esp32_host}:{esp32_port}/api/*")
+    print("- Para detener presiona CTRL+C")
+    print("=" * 72)
 
 def get_lan_ip(default="127.0.0.1"):
     try:
@@ -61,9 +88,30 @@ def get_lan_ip(default="127.0.0.1"):
     except Exception:
         return default
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Proxy HTTP + servidor de archivos estáticos para el proyecto ESP32.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=dedent(
+            """Ejemplos:
+              python servidor_final.py --esp32 192.168.1.120 --port 8081
+              ESP32_HOST=192.168.1.120 python servidor_final.py
+            """
+        ),
+    )
+    parser.add_argument("--esp32", dest="esp32_host", default=ESP32_HOST, help="IP o hostname del ESP32")
+    parser.add_argument("--esp32-port", dest="esp32_port", type=int, default=ESP32_PORT, help="Puerto HTTP del ESP32")
+    parser.add_argument("--port", dest="listen_port", type=int, default=PUERTO_BASE, help="Puerto público para el proxy")
+    parser.add_argument("--bind", dest="listen_host", default=SERVIDOR_BIND, help="Dirección de escucha (0.0.0.0 por defecto)")
+    parser.add_argument("--web-dir", dest="web_dir", default=None, help="Ruta manual a la carpeta dist a servir")
+    return parser.parse_args()
+
 IP_SERVIDOR = get_lan_ip()
 
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):
+    esp32_host = ESP32_HOST
+    esp32_port = ESP32_PORT
+
     # CORS abierto para que el front pueda llamar /api desde el mismo host:puerto
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -81,7 +129,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def proxy_to_esp32(self, method="GET", body=None):
         # Reenvía /api/* al ESP32 (mismo path y query)
         try:
-            conn = http.client.HTTPConnection(ESP32_HOST, ESP32_PORT, timeout=5)
+            target_host = getattr(self, "esp32_host", ESP32_HOST)
+            target_port = getattr(self, "esp32_port", ESP32_PORT)
+            conn = http.client.HTTPConnection(target_host, target_port, timeout=5)
             headers = {}
             conn.request(method, self.path, body=body, headers=headers)
             resp = conn.getresponse()
@@ -118,12 +168,19 @@ def pick_free_port(ip, start, tries=1):
     return start
 
 def run():
-    os.chdir(str(WEB_DIR))
-    port = pick_free_port(IP_SERVIDOR, PUERTO_BASE, 1)
-    httpd = ThreadedHTTPServer((IP_SERVIDOR, port), ProxyHandler)
+    args = parse_args()
+    web_dir = resolve_web_dir(args.web_dir)
+    os.chdir(str(web_dir))
 
-    print(f"[HTTP] Sirviendo {WEB_DIR} en http://{IP_SERVIDOR}:{port}")
-    print(f"[API ] Proxy → http://{ESP32_HOST}:{ESP32_PORT}/api/*")
+    port = pick_free_port(args.listen_host, args.listen_port, 1)
+
+    # Actualizamos valores utilizados por el handler
+    ProxyHandler.esp32_host = args.esp32_host
+    ProxyHandler.esp32_port = args.esp32_port
+
+    httpd = ThreadedHTTPServer((args.listen_host, port), ProxyHandler)
+
+    print_help_banner(args.listen_host, port, args.esp32_host, args.esp32_port, web_dir)
 
     def _stop(sig, frm):
         print("\n[INFO] Deteniendo…")
