@@ -67,7 +67,8 @@ El banner inicial mostrará todas las URL disponibles (localhost y las IP de la 
 1. Asegúrate de que el ESP32 y tu PC estén en la misma red.
 2. Arranca `servidor_final.py` con la IP real del ESP32.
 3. Abre `http://localhost:8080` (o la IP que muestre el banner) en el navegador.
-4. Desde la página puedes iniciar/detener el ciclo del semáforo y ver el estado actual.
+4. Desde la página puedes iniciar/detener el ciclo del semáforo y ver el estado actual. La tarjeta **Configurar API** del panel
+   permite indicar otra URL base si sirves la interfaz desde un origen diferente al proxy.
 
 Si recibes un error 502, revisa la conexión del ESP32 y que el puerto 80 esté accesible desde tu PC.
 
