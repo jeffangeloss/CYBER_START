@@ -1,5 +1,4 @@
-// ...existing code...
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
-  CircleDot,
   Play,
   Square,
   Clock,
@@ -18,7 +16,25 @@ import {
   LogOut
 } from "lucide-react";
 
-type TrafficState = "RED" | "YELLOW" | "GREEN" | "OFF";
+const rawApiBase = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
+const API_BASE = rawApiBase.endsWith("/") ? rawApiBase.slice(0, -1) : rawApiBase;
+const buildApiUrl = (path: string) =>
+  `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+
+type TrafficState = "ROJO" | "AMARILLO" | "VERDE" | "OFF";
+
+const mapStageToState = (stage: string): TrafficState => {
+  switch (stage.toUpperCase()) {
+    case "ROJO":
+      return "ROJO";
+    case "AMARILLO":
+      return "AMARILLO";
+    case "VERDE":
+      return "VERDE";
+    default:
+      return "OFF";
+  }
+};
 
 export default function Dashboard() {
   const { user, loading, signOut } = useAuth();
@@ -27,10 +43,9 @@ export default function Dashboard() {
 
   const [trafficState, setTrafficState] = useState<TrafficState>("OFF");
   const [isRunning, setIsRunning] = useState(false);
-  const [currentTime, setCurrentTime] = useState(new Date().toISOString());
+  const [currentTime, setCurrentTime] = useState("--");
   const [connectionStatus, setConnectionStatus] = useState<"connected" | "disconnected">("disconnected");
-
-  const cycleRef = useRef<number | null>(null);
+  const lastErrorNotifiedRef = useRef(false);
 
   // Redirigir si no hay usuario
   useEffect(() => {
@@ -39,91 +54,155 @@ export default function Dashboard() {
     }
   }, [user, loading, navigate]);
 
-  // Limpiar intervalo del semáforo al desmontar
-  useEffect(() => {
-    return () => {
-      if (cycleRef.current !== null) {
-        clearInterval(cycleRef.current);
-        cycleRef.current = null;
+  const fetchState = useCallback(
+    async ({ signal }: { signal?: AbortSignal } = {}) => {
+      try {
+        const response = await fetch(buildApiUrl("/state"), {
+          cache: "no-store",
+          signal,
+        });
+        if (!response.ok) {
+          const bodyText = await response.text();
+          let detail = bodyText;
+          try {
+            const parsed = JSON.parse(bodyText);
+            if (parsed?.detail) {
+              detail = parsed.detail;
+            }
+          } catch {
+            /* noop */
+          }
+          throw new Error(`Estado HTTP ${response.status}${detail ? ` – ${detail}` : ""}`);
+        }
+
+        const data: {
+          running?: boolean;
+          stage?: string;
+          time?: string;
+        } = await response.json();
+
+        setConnectionStatus("connected");
+        setIsRunning(Boolean(data.running));
+        setTrafficState(data.running ? mapStageToState(data.stage ?? "") : "OFF");
+        if (data.time) {
+          setCurrentTime(data.time);
+        }
+        lastErrorNotifiedRef.current = false;
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") {
+          return;
+        }
+
+        console.error("No se pudo obtener el estado del ESP32", error);
+        setConnectionStatus("disconnected");
+        setIsRunning(false);
+        setTrafficState("OFF");
+        setCurrentTime("--");
+
+        if (!lastErrorNotifiedRef.current) {
+          toast({
+            title: "ESP32 sin respuesta",
+            description: "Revisa la conexión del dispositivo y del proxy.",
+            variant: "destructive",
+          });
+          lastErrorNotifiedRef.current = true;
+        }
       }
-    };
-  }, []);
+    },
+    [toast]
+  );
 
-  // Actualizar reloj cada segundo
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentTime(new Date().toISOString());
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
+    const controller = new AbortController();
+    fetchState({ signal: controller.signal });
 
-  const handleStart = () => {
-    if (isRunning) return; // ya está en marcha
-
-    // Asegurar que no haya intervalos previos
-    if (cycleRef.current !== null) {
-      clearInterval(cycleRef.current);
-      cycleRef.current = null;
-    }
-
-    setIsRunning(true);
-    setConnectionStatus("connected");
-    toast({
-      title: "Sistema iniciado",
-      description: "Semáforo en operación",
-    });
-
-    // Estado inicial
-    let state: TrafficState = "GREEN";
-    setTrafficState(state);
-
-    // Guardar id del intervalo para poder detenerlo después
-    cycleRef.current = window.setInterval(() => {
-      state = state === "GREEN" ? "YELLOW" : state === "YELLOW" ? "RED" : "GREEN";
-      setTrafficState(state);
+    const interval = window.setInterval(() => {
+      fetchState();
     }, 3000);
-  };
 
-  const handleStop = () => {
-    // Detener intervalo si existe
-    if (cycleRef.current !== null) {
-      clearInterval(cycleRef.current);
-      cycleRef.current = null;
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [fetchState]);
+
+  const handleStart = async () => {
+    try {
+      const response = await fetch(buildApiUrl("/start"), { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Estado HTTP ${response.status}`);
+      }
+
+      setIsRunning(true);
+      setConnectionStatus("connected");
+      toast({
+        title: "Sistema iniciado",
+        description: "Semáforo en operación",
+      });
+
+      await fetchState();
+    } catch (error) {
+      console.error("No se pudo iniciar el semáforo", error);
+      setConnectionStatus("disconnected");
+      toast({
+        title: "Error al iniciar",
+        description: "No se pudo comunicar con el ESP32",
+        variant: "destructive",
+      });
     }
-
-    setIsRunning(false);
-    setTrafficState("OFF");
-    setConnectionStatus("disconnected");
-    toast({
-      title: "Sistema detenido",
-      description: "Semáforo fuera de servicio",
-      variant: "destructive",
-    });
   };
 
- const handleSignOut = async () => {
+  const handleStop = async () => {
+    try {
+      const response = await fetch(buildApiUrl("/stop"), { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Estado HTTP ${response.status}`);
+      }
+
+      setIsRunning(false);
+      setTrafficState("OFF");
+      setConnectionStatus("connected");
+      toast({
+        title: "Sistema detenido",
+        description: "Semáforo fuera de servicio",
+        variant: "destructive",
+      });
+
+      await fetchState();
+    } catch (error) {
+      console.error("No se pudo detener el semáforo", error);
+      setConnectionStatus("disconnected");
+      toast({
+        title: "Error al detener",
+        description: "No se pudo comunicar con el ESP32",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSignOut = async () => {
     if (!confirm("¿Cerrar sesión?")) return;
     try {
-     await signOut();
-     toast({
-       title: "Sesión cerrada",
+      await signOut();
+      toast({
+        title: "Sesión cerrada",
         description: "Has salido del sistema",
       });
       navigate("/auth");
     } catch {
       toast({
-       variant: "destructive",
+        variant: "destructive",
         title: "Error",
         description: "No se pudo cerrar la sesión",
-     });
+      });
     }
   };
 
   const getStateColor = (state: TrafficState) => {
     switch (state) {
-      case "RED": return "bg-red-500";
-      case "YELLOW": return "bg-yellow-500";
-      case "GREEN": return "bg-green-500";
+      case "ROJO": return "bg-red-500";
+      case "AMARILLO": return "bg-yellow-500";
+      case "VERDE": return "bg-green-500";
       default: return "bg-gray-500";
     }
   };
@@ -212,9 +291,9 @@ export default function Dashboard() {
               <div className="flex flex-col items-center gap-6">
                 <div className="relative">
                   <div className="w-32 h-80 bg-card border-4 border-border rounded-2xl p-4 flex flex-col justify-around items-center shadow-2xl">
-                    <div className={`w-20 h-20 rounded-full ${trafficState === "RED" ? getStateColor("RED") : "bg-gray-700"} shadow-lg transition-all duration-300 ${trafficState === "RED" ? "shadow-red-500/50" : ""}`} />
-                    <div className={`w-20 h-20 rounded-full ${trafficState === "YELLOW" ? getStateColor("YELLOW") : "bg-gray-700"} shadow-lg transition-all duration-300 ${trafficState === "YELLOW" ? "shadow-yellow-500/50" : ""}`} />
-                    <div className={`w-20 h-20 rounded-full ${trafficState === "GREEN" ? getStateColor("GREEN") : "bg-gray-700"} shadow-lg transition-all duration-300 ${trafficState === "GREEN" ? "shadow-green-500/50" : ""}`} />
+                    <div className={`w-20 h-20 rounded-full ${trafficState === "ROJO" ? getStateColor("ROJO") : "bg-gray-700"} shadow-lg transition-all duration-300 ${trafficState === "ROJO" ? "shadow-red-500/50" : ""}`} />
+                    <div className={`w-20 h-20 rounded-full ${trafficState === "AMARILLO" ? getStateColor("AMARILLO") : "bg-gray-700"} shadow-lg transition-all duration-300 ${trafficState === "AMARILLO" ? "shadow-yellow-500/50" : ""}`} />
+                    <div className={`w-20 h-20 rounded-full ${trafficState === "VERDE" ? getStateColor("VERDE") : "bg-gray-700"} shadow-lg transition-all duration-300 ${trafficState === "VERDE" ? "shadow-green-500/50" : ""}`} />
                   </div>
                 </div>
 
@@ -302,4 +381,3 @@ export default function Dashboard() {
     </div>
   );
 }
-// ...existing code...
